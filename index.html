@@ -4146,7 +4146,25 @@ window.LIVE_WFS = window.LIVE_WFS || null;
 window.LIVE_WF_PATHS = window.LIVE_WF_PATHS || {};
 function proxyBase() { return (location.protocol === 'file:' ? '' : '') + '/n8n'; }
 function liveWfBase() { return location.protocol === 'file:' ? '' : ''; }
+/* v19.6P (Lexi): on GitHub Pages / any non-file host, n8n is intentionally unreachable — the
+   published page is a DESIGN PREVIEW. Serve a demo workflow list instead of failing. */
+const LIVE_WF_DEMOS = [
+  { id: 'demo-wf-a', name: 'Prod-Demo Module A-v1.0', active: true },
+  { id: 'demo-wf-b', name: 'Dev-Demo Module B-v1.0', active: false },
+  { id: 'demo-wf-c', name: 'Prod-Demo Workflow C-v1.0', active: true },
+];
+function isPublicPreview() {
+  if (location.protocol === 'file:') return false;
+  const h6 = location.hostname || '';
+  const isLocal = h6 === 'example.local' || h6 === '127.0.0.1' || h6 === '0.0.0.0' || /\.local$/.test(h6) || h6 === '';
+  return !isLocal;
+}
 async function pullLiveWorkflows() {
+  if (isPublicPreview()) {
+    if (!window.LIVE_WFS || !window.LIVE_WFS.length) window.LIVE_WFS = LIVE_WF_DEMOS.slice();
+    toast('Design preview — showing demo workflows (live pull needs the LBX desktop)');
+    return window.LIVE_WFS;
+  }
   try {
     const r2 = await fetch(liveWfBase() + '/n8n/list-workflows?limit=100');
     const j2 = await r2.json();
@@ -4161,6 +4179,10 @@ async function pullLiveWorkflows() {
   } catch (er) { toast('n8n pull failed — is the proxy (port 0000) running?'); return []; }
 }
 async function pullWfWebhookPath(wfId) {
+  if (isPublicPreview()) {
+    const demo = (window.LIVE_WFS || []).find(d => d.id === wfId);
+    return demo ? { path: 'demo/' + String(demo.id).replace(/^demo-wf-/, ''), method: 'POST' } : null;
+  }
   try {
     const r2 = await fetch(liveWfBase() + '/n8n/workflow/' + encodeURIComponent(wfId));
     const j2 = await r2.json();
@@ -5729,6 +5751,16 @@ function openPartnerDetail(kind, id, opts) {
   };
   window.PARTNER_SECTIONS = sections;
   const sec = sections[kind];
+  /* v19.6P (Lexi fix): opening a linked partner from ANOTHER kind's detail must switch the
+     top-level view too (customer detail ▸ supplier ▸ View = Suppliers page + supplier detail) */
+  const VIEW_OF = { customer: 'customers', supplier: 'suppliers', mfg: 'mfgvendors', dist: 'distdealers' };
+  const targetView = VIEW_OF[kind];
+  const isActive = el9 => el9 && (el9.classList.contains('active') || (el9.style.display !== 'none' && el9.offsetParent !== null));
+  const fromOtherView = Object.keys(VIEW_OF).some(k3 => k3 !== kind && isActive(document.getElementById('view-' + VIEW_OF[k3])));
+  if (targetView && fromOtherView && typeof showView === 'function') {
+    window.__SUPPRESS_FLOW_RESET__ = true;
+    try { if (typeof PF_EDIT !== 'undefined' && PF_EDIT) { PF_EDIT.kind = null; } showView(targetView); } finally { window.__SUPPRESS_FLOW_RESET__ = false; }
+  }
   document.getElementById(sec.main).style.display = 'none';
   const listHead = document.getElementById('pf-head-' + kind);
   if (listHead) listHead.style.display = 'none';
@@ -7104,7 +7136,7 @@ document.addEventListener('click', (e) => {
   const b = e.target.closest('[data-ctedit]');
   if (b) openContractEditor(b.dataset.ctedit);
   const v = e.target.closest('[data-ctview]');
-  if (v) openContractEditor(v.dataset.ctview, true);
+  if (v) { window.__CT_ORIGIN__ = (window.CC && window.CC.activeView) || 'contracts'; openContractEditor(v.dataset.ctview, true); }
   const d = e.target.closest('[data-ctdel]');
   if (d) deleteContractRow(d.dataset.ctdel);
 });
@@ -7147,10 +7179,13 @@ function openContractEditor(id, ro) {
     document.getElementById('contractsList').style.display = 'none';
     const pg = document.getElementById('contractPage');
     pg.style.display = '';
+    /* v19.6P (Lexi): back label = origin (Contracts/Customers); actions = Edit only */
+    const ctOrigin = (window.__CT_ORIGIN__ === 'customers') ? 'Customers' : 'Contracts';
+    const bk9 = document.querySelector('[data-ctpageback]');
+    if (bk9) bk9.textContent = '← Back to ' + ctOrigin;
     document.getElementById('contractPageTitle').textContent = 'Contract — ' + id;
     document.getElementById('contractPageActions').innerHTML =
-      '<button class="btn" style="margin-right:6px" onclick="openContractEditor(\'' + id + '\')">Edit</button>' +
-      '<button class="btn" style="color:var(--color-danger)" onclick="closeContractPage();deleteContractRow(\'' + id + '\')">Delete</button>';
+      '<button class="btn btn--primary" onclick="openContractEditor(\'' + id + '\')">Edit</button>';
     document.getElementById('contractPageBody').innerHTML = bodyHtml;
     document.querySelectorAll('#contractPageBody input, #contractPageBody select').forEach(el2 => { el2.disabled = true; });
     document.querySelectorAll('#contractPageBody .chip').forEach(c2 => { c2.classList.add('off'); c2.onclick = (e) => e.preventDefault(); });
@@ -7195,7 +7230,14 @@ function openContractEditor(id, ro) {
     if (go) go.addEventListener('click', () => saveContract(go.dataset.ctsave || 'new'));
   }, 0);
 }
-function openContractView(ref) { openContractEditor(ref, true); }
+function openContractView(ref, custId) {
+  /* v19.6P (Lexi): record origin — back button + return target depend on it. NOTE: PF_EDIT is a
+     script-scope const (not window.PF_EDIT) — reference it directly. */
+  const pe = (typeof PF_EDIT !== 'undefined' && PF_EDIT) ? PF_EDIT : null;
+  window.__CT_ORIGIN__ = (pe && pe.kind === 'customer') ? 'customers' : (window.__CT_ORIGIN__ === 'customers' && !pe ? 'customers' : 'contracts');
+  window.__CT_ORIGIN_CUST__ = custId || (pe && pe.kind === 'customer' ? pe.id : null) || null;
+  openContractEditor(ref, true);
+}
 function closeContractPage() {
   const pg = document.getElementById('contractPage');
   if (!pg) return;
@@ -7206,7 +7248,11 @@ function closeContractPage() {
 }
 document.addEventListener('click', (e) => {
   const pb = e.target.closest('[data-ctpageback]');
-  if (pb) { closeContractPage(); renderContractTable(); }
+  if (pb) {
+    const org2 = window.__CT_ORIGIN__ || 'contracts';
+    closeContractPage(); renderContractTable();
+    if (org2 === 'customers') { showView('customers'); try { openPartnerDetail('customer', window.__CT_ORIGIN_CUST__ || 'CUS-001'); } catch (e5) {} }
+  }
 });
 const SERVICE_CONTRACT_TAG = {};
 /* v19.4: contract service-lines renderer (one-by-one add, duration + credits per line) */
